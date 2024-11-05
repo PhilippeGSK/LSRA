@@ -70,6 +70,19 @@ class BasicBlock:
     first_statemenent: Statement | None
     last_statement: Statement | None
 
+    def tree_execution_order(self) -> Iterable[Tree]:
+        def tree_visitor(tree: Tree) -> Iterable[Tree]:
+            for subtree in tree.subtrees:
+                for t in tree_visitor(subtree):
+                    yield t
+            yield tree
+        
+        statement = self.first_statemenent
+        while statement != None:
+            for t in tree_visitor(statement.tree):
+                yield t
+            statement = statement.next_statement
+
     def append_tree(self, il_idx: int, tree: Tree) -> None:
         new_statement = Statement(il_idx=il_idx, tree=tree, next_statement=None, prev_statement=self.last_statement)
         if (self.last_statement == None):

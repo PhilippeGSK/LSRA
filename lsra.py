@@ -132,11 +132,9 @@ class Lsra:
 
         # If the current tree isn't the one that writes the value or if it doesn't already restore the value, 
         # we need to add a restore. This is only applicable to the first load of a variable
-        inter_use_pos = inter.first_use_pos(self.current_tree.ir_idx)
-        assert inter_use_pos != None # We don't activate intervals that aren't going to be used
         if self.current_tree is not inter.of:
-            if not any(restore.interval == inter for restore in inter_use_pos.used_in.restores):
-                inter_use_pos.used_in.restores.append(RegRestore(reg=best_reg_i, interval=inter))
+            if not any(restore.interval == inter for restore in self.current_tree.restores):
+                self.current_tree.restores.append(RegRestore(reg=best_reg_i, interval=inter))
         best_reg.active_interval = inter
         inter.live_in = best_reg_i
         self.active_intervals.append(inter)
@@ -211,8 +209,6 @@ class Lsra:
                 live_in=None
             ))
 
-        # TODO block boundaries
-
         # Find the last read, first read, and first write as well as the use positions of every local variable
         for tree in ir.tree_execution_order():
             if tree.kind == irepr.TreeKind.StLocal:
@@ -223,7 +219,7 @@ class Lsra:
                     inter.live_range.first_write_at = loc
             if tree.kind == irepr.TreeKind.LdLocal:
                 inter: Interval = self.var_intervals[tree.operands[0]]
-                # The value is going to be used in whatever the parent of the LdLocal node is
+                # The value is going to be last read in the parent of the LdLocal node
                 loc = tree.parent.ir_idx
                 if loc < inter.live_range.first_read_at:
                     inter.live_range.first_read = tree
@@ -231,8 +227,10 @@ class Lsra:
                 if loc > inter.live_range.last_read_at:
                     inter.live_range.last_read = tree
                     inter.live_range.last_read_at = loc
-                inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree.parent))
+                inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree))
         
+        # TODO block boundaries
+
         # Linear scan
         for tree in ir.tree_execution_order():
             self.current_tree = tree
@@ -252,11 +250,6 @@ class Lsra:
                 self.registers[spill.reg].active_interval = None
                 spill.interval.live_in = None
             for restore in tree.restores:
-                # Skip restores for which we already know the register for. 
-                # It means they correspond to a local var first readand were made alive earlier
-                if restore.reg != -1:
-                    continue
-
                 assert restore.interval.live_in == None, "finding a restore reg for an interval that's already active"
                 
                 self.activate_interval(restore.interval)
@@ -267,12 +260,11 @@ class Lsra:
             if allow_operand_reuse:
                 self.free_intervals()
 
-            # Special case for LdLocal : when we use the value of a var interval for the first time, we need to activate its interval.
-            # All the other activations will be handled by the restores that come with the spills
+            # Special case for LdLocal : when we use the value of a var interval, we need to activate its interval.
             if tree.kind == irepr.TreeKind.LdLocal:
-                if tree is self.var_intervals[tree.operands[0]].live_range.first_read:
-                    inter: Interval = self.var_intervals[tree.operands[0]]
-                    self.activate_interval(inter)
+                inter: Interval = self.var_intervals[tree.operands[0]]
+                self.activate_interval(inter)
+                tree.reg = inter.live_in
             
             # In all other case : create an interval for the current tree if it produces a value
             elif tree.parent != None:
