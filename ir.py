@@ -37,6 +37,13 @@ class Tree:
     reg: int = -1
     spills: list[RegSpill] = dataclasses.field(default_factory=list)
     restores: list[RegRestore] = dataclasses.field(default_factory=list)
+    
+    def tree_execution_order(self) -> Iterable[Tree]:
+        for subtree in self.subtrees:
+            for tree in subtree.tree_execution_order():
+                yield tree
+        
+        yield self
 
     def dump(self, indent_level: int = 0):
         for tree in self.subtrees:
@@ -71,15 +78,9 @@ class BasicBlock:
     last_statement: Statement | None
 
     def tree_execution_order(self) -> Iterable[Tree]:
-        def tree_visitor(tree: Tree) -> Iterable[Tree]:
-            for subtree in tree.subtrees:
-                for t in tree_visitor(subtree):
-                    yield t
-            yield tree
-        
         statement = self.first_statemenent
         while statement != None:
-            for t in tree_visitor(statement.tree):
+            for t in statement.tree.tree_execution_order():
                 yield t
             statement = statement.next_statement
 
@@ -172,6 +173,12 @@ class Ir:
             index += 1
         
         self.ir_idx_count = index
+    
+    def block_execution_order(self) -> Iterable[BasicBlock]:
+        block = self.blocks.first
+        while block != None:
+            yield block
+            block = block.next_block
     
     def tree_execution_order(self) -> Iterable[Tree]:
         def tree_visitor(tree: Tree) -> Iterable[Tree]:

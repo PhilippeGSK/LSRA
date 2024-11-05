@@ -25,11 +25,7 @@ class RegRestore:
 
 @dataclasses.dataclass
 class LiveRange:
-    first_write: Tree
-    first_read: Tree
-    last_read: Tree
     first_write_at: int
-    first_read_at: int
     last_read_at: int
 
 @dataclasses.dataclass
@@ -205,7 +201,7 @@ class Lsra:
             self.var_intervals.append(Interval(
                 of=i, 
                 use_positions=[], 
-                live_range=LiveRange(first_write=None, first_read=None, last_read=None, first_write_at=ir.ir_idx_count, first_read_at=ir.ir_idx_count, last_read_at=-1), 
+                live_range=LiveRange(first_write_at=ir.ir_idx_count, last_read_at=-1), 
                 live_in=None
             ))
 
@@ -215,67 +211,69 @@ class Lsra:
                 inter: Interval = self.var_intervals[tree.operands[0]]
                 loc = tree.ir_idx
                 if loc < inter.live_range.first_write_at:
-                    inter.live_range.first_write = tree
                     inter.live_range.first_write_at = loc
             if tree.kind == irepr.TreeKind.LdLocal:
                 inter: Interval = self.var_intervals[tree.operands[0]]
                 # The value is going to be last read in the parent of the LdLocal node
                 loc = tree.parent.ir_idx
-                if loc < inter.live_range.first_read_at:
-                    inter.live_range.first_read = tree
-                    inter.live_range.first_read_at = loc
                 if loc > inter.live_range.last_read_at:
-                    inter.live_range.last_read = tree
                     inter.live_range.last_read_at = loc
                 inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree))
         
-        # TODO block boundaries
 
         # Linear scan
-        for tree in ir.tree_execution_order():
-            self.current_tree = tree
+        for block in ir.block_execution_order():
+            # TODO block boundaries with active in and active out sets + resolution
+            for reg in self.registers:
+                reg.active_interval = None
+            for interval in self.active_intervals:
+                interval.live_in = None
+            self.active_intervals = []
 
-            # Restores aren't allowed to reuse operand registers
-            allow_operand_reuse = self.allow_operand_reuse
-            self.allow_operand_reuse = False
-            self.free_intervals()
+            for tree in block.tree_execution_order():
+                self.current_tree = tree
 
-            # If the tree spills or restores intervals, we update the active interval set accordingly
-            # The spill part might never be encountered, but it's implemented for the sake of completeness
-            for spill in tree.spills:
-                assert spill.interval.live_in != None, "spill of interval that's not active"
-                assert spill.reg == spill.interval.live_in, "spill register and register of interval to spill don't match"
-                
-                self.active_intervals.remove(spill.interval)
-                self.registers[spill.reg].active_interval = None
-                spill.interval.live_in = None
-            for restore in tree.restores:
-                assert restore.interval.live_in == None, "finding a restore reg for an interval that's already active"
-                
-                self.activate_interval(restore.interval)
-                restore.reg = restore.interval.live_in
-            
-            # Free intervals again, this time restoring allow_operand_reuse, so that output from trees can reuse operand registers
-            self.allow_operand_reuse = allow_operand_reuse
-            if allow_operand_reuse:
+                # Restores aren't allowed to reuse operand registers
+                allow_operand_reuse = self.allow_operand_reuse
+                self.allow_operand_reuse = False
                 self.free_intervals()
 
-            # Special case for LdLocal : when we use the value of a var interval, we need to activate its interval.
-            if tree.kind == irepr.TreeKind.LdLocal:
-                inter: Interval = self.var_intervals[tree.operands[0]]
-                self.activate_interval(inter)
-                tree.reg = inter.live_in
-            
-            # In all other case : create an interval for the current tree if it produces a value
-            elif tree.parent != None:
-                tree_interval = Interval(
-                    of=tree,
-                    use_positions=[], 
-                    live_range=LiveRange(first_write=tree, first_read=tree.parent, last_read=tree.parent, first_write_at=tree.ir_idx, first_read_at=tree.parent.ir_idx, last_read_at=tree.parent.ir_idx), 
-                    live_in=None
-                )
-                tree_interval.use_positions.append(UsePos(belongs_to=tree_interval, used_in=tree.parent))
-                self.activate_interval(tree_interval)
-                tree.reg = tree_interval.live_in
+                # If the tree spills or restores intervals, we update the active interval set accordingly
+                # The spill part might never be encountered, but it's implemented for the sake of completeness
+                for spill in tree.spills:
+                    assert spill.interval.live_in != None, "spill of interval that's not active"
+                    assert spill.reg == spill.interval.live_in, "spill register and register of interval to spill don't match"
+                    
+                    self.active_intervals.remove(spill.interval)
+                    self.registers[spill.reg].active_interval = None
+                    spill.interval.live_in = None
+                for restore in tree.restores:
+                    assert restore.interval.live_in == None, "finding a restore reg for an interval that's already active"
+                    
+                    self.activate_interval(restore.interval)
+                    restore.reg = restore.interval.live_in
+                
+                # Free intervals again, this time restoring allow_operand_reuse, so that output from trees can reuse operand registers
+                self.allow_operand_reuse = allow_operand_reuse
+                if allow_operand_reuse:
+                    self.free_intervals()
+
+                # Special case for LdLocal : when we use the value of a var interval, we need to activate its interval.
+                if tree.kind == irepr.TreeKind.LdLocal:
+                    inter: Interval = self.var_intervals[tree.operands[0]]
+                    self.activate_interval(inter)
+                    tree.reg = inter.live_in
+                
+                # In all other case : create an interval for the current tree if it produces a value
+                elif tree.parent != None:
+                    tree_interval = Interval(
+                        of=tree,
+                        use_positions=[], 
+                        live_range=LiveRange(first_write_at=tree.ir_idx, last_read_at=tree.parent.ir_idx), 
+                        live_in=None
+                    )
+                    tree_interval.use_positions.append(UsePos(belongs_to=tree_interval, used_in=tree.parent))
+                    self.activate_interval(tree_interval)
+                    tree.reg = tree_interval.live_in
 
     
