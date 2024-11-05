@@ -3,10 +3,12 @@ import dataclasses
 from ir import *
 import ir as irepr
 
+# Represents a register
 @dataclasses.dataclass
 class Register:
     active_interval: Interval | None
 
+# These will be attached to the tree nodes to signify an interval should be spilled from a register before the node is executed
 @dataclasses.dataclass
 class RegSpill:
     reg: int
@@ -15,6 +17,7 @@ class RegSpill:
     def __str__(self) -> str:
         return f"spill {self.interval} from r{self.reg}"
 
+# These will be attached to the tree nodes to signify an interval should be restored into a register before the node is executed
 @dataclasses.dataclass
 class RegRestore:
     reg: int
@@ -23,16 +26,19 @@ class RegRestore:
     def __str__(self) -> str:
         return f"restore {self.interval} into r{self.reg}"
 
+# Represents the live range of an interval
 @dataclasses.dataclass
 class LiveRange:
     first_write_at: int
     last_read_at: int
 
+# Represents a use position of an interval
 @dataclasses.dataclass
 class UsePos:
     belongs_to: Interval
     used_in: Tree
 
+# Represents a value (local var or tree temp)
 @dataclasses.dataclass
 class Interval:
     of: int | Tree
@@ -55,6 +61,7 @@ class Interval:
         
         return None
 
+# The main class that performs LSRA
 class Lsra:
     registers: list[Register]
     var_intervals: list[Interval]
