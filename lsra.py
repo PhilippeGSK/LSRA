@@ -117,9 +117,6 @@ class Lsra:
         self.current_tree = None
     
     # Removes expired intervals from the active_intervals list and frees the corresponding registers
-    # TODO : Improve this by taking into account writes into variables : we can free a var interval if we
-    # know there will be a write to that variable before its next use. This could be implemented by adding "write"
-    # use positions
     def free_intervals(self) -> None:
         pos = self.current_tree.ir_idx
         new_active_intervals = []
