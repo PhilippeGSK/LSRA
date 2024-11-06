@@ -126,11 +126,13 @@ class Lsra:
         for active_interval in self.active_intervals:
             last_use_reached = active_interval.live_range.last_read_at < pos
             
-            """
             if not last_use_reached and self.allow_operand_reuse:
                 # If we allow operand reuse, we free operand registers for the output
-                last_use_reached = active_interval.live_range.last_read_at == pos
-            """
+                # Disallow "reusing operands" on block boundaries because variables used on boundary
+                # TODO : this needs improvement
+                first_use_pos = active_interval.first_use_pos(pos)
+                if first_use_pos != None and not first_use_pos.on_block_boundary:
+                    last_use_reached = active_interval.live_range.last_read_at == pos
             
             if not last_use_reached:
                 # First use pos could be None for a variable that is expected to live further than its last actual use pos (LdLocal case)
@@ -142,8 +144,8 @@ class Lsra:
                     last_use_reached = first_write_pos.used_in.ir_idx < first_use_pos.used_in.ir_idx
 
                     # If we allow operand reuse, we free operand registers for the output
-                    # Disallow "reusing operands" on block boundaries because variables used on boundary are part of the active out set
-                    # TODO : this is not needed anymore
+                    # Disallow "reusing operands" on block boundaries because variables used on boundary
+                    # TODO : this needs improvement
                     if not last_use_reached and self.allow_operand_reuse and not first_write_pos.on_block_boundary:
                         last_use_reached = first_write_pos.used_in.ir_idx == first_use_pos.used_in.ir_idx
 
@@ -151,8 +153,6 @@ class Lsra:
                 new_active_intervals.append(active_interval)
                 continue
             
-            
-            print("free", active_interval, "at", self.current_tree.ir_idx)
             reg: Register = self.registers[active_interval.live_in]
             reg.active_interval = None
             active_interval.live_in = None
@@ -242,15 +242,21 @@ class Lsra:
         best_use_pos: UsePos | None = None
         for active_interval in self.active_intervals:
             use_pos = active_interval.first_use_pos(current_pos)
-            # This shouldn't happen because active intervals should have use positions in the future
+
+            # This shouldn't happen in general because active intervals should have use positions in the future
             # We called free_intervals() to ensure that
-            assert use_pos != None, "None use pos"
+            # TODO : after liveness analysis is done, the use_pos == None check should become
+            # `assert use_pos != None, "None use pos"`
+            if use_pos == None:
+                best_interval = active_interval
+                best_use_pos = use_pos
+                break
             
             # We can't spill an interval we're about to use
             if use_pos.used_in.ir_idx <= inter_use_pos.used_in.ir_idx:
                 continue
 
-            if best_use_pos == None or use_pos.used_in.ir_idx > best_use_pos.used_in.ir_idx:
+            if best_interval == None or use_pos.used_in.ir_idx > best_use_pos.used_in.ir_idx:
                 best_interval = active_interval
                 best_use_pos = use_pos
 
@@ -302,7 +308,9 @@ class Lsra:
                         inter.live_range.last_read_at = loc
                     inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree, on_block_boundary=False))
             
-            # TODO : compute live in / out sets to make sure that variables aren't needlessly used on block boundaries
+            # TODO : liveness analysis should compute when will be the last time we could jump back to a previous block that uses a variable
+            for var_interval in self.var_intervals:
+                var_interval.live_range.last_read_at = ir.ir_idx_count
 
         # Linear scan
         for block in ir.block_execution_order():
@@ -457,11 +465,13 @@ class Lsra:
                 for active_out in block.active_out:
                     for active_in in edge.target.active_in:
                         if active_out.interval.of == active_in.interval.of and active_out.reg != active_in.reg:
+                            print(active_out.interval.of)
                             edge.moves.append(RegMove(reg_from=active_out.reg, reg_to=active_in.reg, interval=active_out.interval))
                 
                 # Restore variables that are active in the next block but weren't in the previous
                 for active_in in edge.target.active_in:
                     if not any(active_out.interval.of == active_in.interval.of for active_out in block.active_out):
+                        print(active_in.interval.of)
                         edge.restores.append(RegRestore(reg=active_in.reg, interval=active_in.interval))
                 
 

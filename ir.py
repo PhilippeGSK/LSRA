@@ -244,8 +244,10 @@ class Ir:
             for spill in spills:
                 print(f"    mov {spill.interval}, r{spill.reg} ; spill")
         def move_all(moves: list[RegMove]) -> None:
+            if moves != []:
+                print("    ; todo : don't have registers overwrite each other")
             for move in moves:
-                print(f"    mov r{move.reg_to}, r{move.reg_from} ; move")
+                print(f"        mov r{move.reg_to}, r{move.reg_from} ; move")
         def restore_all(restores: list[RegRestore]) -> None:
             for restore in restores:
                 print(f"    mov r{restore.reg}, {restore.interval} ; restore")

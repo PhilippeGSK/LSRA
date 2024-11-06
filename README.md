@@ -15,3 +15,4 @@ some instructions might not be able to reuse operands for output
 - The block execution order is, so far, just the order the blocks are in in the stack-based language. It might be a good idea to, for example,
 sort the blocks by their likeliness to be executed
 - Edges are not weighted
+- Consider doing LSRA iterating through the trees in reverse like LuaJIT does?
