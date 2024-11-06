@@ -170,7 +170,8 @@ class Ir:
     def recompute_predecessors(self) -> None:
         block = self.blocks.first
         while block != None:
-            print("last", block.last_statement)
+            for operand in block.last_statement.tree.operands:
+                operand.predecessors.append(block)
             block = block.next_block
 
     def reindex(self) -> None:
@@ -201,7 +202,7 @@ class Ir:
     def dump(self) -> None:
         block = self.blocks.first
         while block != None:
-            print(f"blk 0x{hex(block.il_idx)[2:].zfill(4)}")
+            print(f"blk 0x{hex(block.il_idx)[2:].zfill(4)} - predecessors: [" + ", ".join(str(pred) for pred in block.predecessors) + "]")
             statement = block.first_statemenent
             while statement != None:
                 print(f"stmt 0x{hex(statement.il_idx)[2:].zfill(4)}")

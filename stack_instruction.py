@@ -113,5 +113,6 @@ def import_to_ir(fn: StackFunction) -> Ir:
             raise Exception("Illegal terminator")
 
     result = Ir(blocks=blocks, local_vars=fn.local_vars)
+    result.recompute_predecessors()
     result.reindex()
     return result
