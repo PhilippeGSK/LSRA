@@ -37,12 +37,21 @@ class LiveRange:
 class UsePos:
     belongs_to: Interval
     used_in: Tree
+    on_block_boundary: bool
+
+# Represents a write position of an interval
+@dataclasses.dataclass
+class WritePos:
+    belongs_to: Interval
+    used_in: Tree
+    on_block_boundary: bool
 
 # Represents a value (local var or tree temp)
 @dataclasses.dataclass
 class Interval:
     of: int | Tree
     use_positions: list[UsePos]
+    write_positions: list[WritePos]
     live_range: LiveRange
     live_in: int | None
 
@@ -58,8 +67,13 @@ class Interval:
                 continue
 
             return use_pos
-        
-        return None
+
+    def first_write_pos(self, current_pos: int) -> WritePos | None:
+        for write_pos in self.write_positions:
+            if write_pos.used_in.ir_idx < current_pos:
+                continue
+            
+            return write_pos
 
 # The main class that performs LSRA
 class Lsra:
@@ -92,15 +106,34 @@ class Lsra:
         pos = self.current_tree.ir_idx
         new_active_intervals = []
         for active_interval in self.active_intervals:
-            if active_interval.live_range.last_read_at > pos:
+            last_use_reached = active_interval.live_range.last_read_at < pos
+            
+            if not last_use_reached and self.allow_operand_reuse:
+                # If we allow operand reuse, we free operand registers for the output
+                # Disallow "reusing operands" on block boundaries because variables used on boundary are part of the active out set
+                last_use_reached = active_interval.live_range.last_read_at == pos and not active_interval.first_use_pos(pos).on_block_boundary
+            
+            if not last_use_reached:
+                first_use_pos = active_interval.first_use_pos(pos)
+                assert first_use_pos != None, "first use not found before last use"
+                first_write_pos = active_interval.first_write_pos(pos)
+
+                if first_write_pos != None:
+                    # Interval will be remade active by a write later
+                    last_use_reached = first_write_pos.used_in.ir_idx < first_use_pos.used_in.ir_idx
+
+                    # If we allow operand reuse, we free operand registers for the output
+                    # Disallow "reusing operands" on block boundaries because variables used on boundary are part of the active out set
+                    if not last_use_reached and self.allow_operand_reuse and not first_write_pos.on_block_boundary:
+                        last_use_reached = first_write_pos.used_in.ir_idx == first_use_pos.used_in.ir_idx
+
+            if not last_use_reached:
                 new_active_intervals.append(active_interval)
-            # If we allow operand reuse, we free operand registers for the output
-            elif not self.allow_operand_reuse and active_interval.live_range.last_read_at == pos:
-                new_active_intervals.append(active_interval)
-            else:
-                reg: Register = self.registers[active_interval.live_in]
-                reg.active_interval = None
-                active_interval.live_in = None
+                continue
+            
+            reg: Register = self.registers[active_interval.live_in]
+            reg.active_interval = None
+            active_interval.live_in = None
         self.active_intervals = new_active_intervals
     
     # Tries to make an interval active without spilling
@@ -141,8 +174,8 @@ class Lsra:
         if self.current_tree is not inter.of:
             if not any(restore.interval == inter for restore in self.current_tree.restores):
                 self.current_tree.restores.append(RegRestore(reg=best_reg_i, interval=inter))
-        best_reg.active_interval = inter
         inter.live_in = best_reg_i
+        best_reg.active_interval = inter
         self.active_intervals.append(inter)
         return True
     
@@ -160,7 +193,7 @@ class Lsra:
         res = inter.live_in
         inter.live_in = None
         self.active_intervals.remove(inter)
-        self.registers[res] = None
+        self.registers[res].active_interval = None
 
         return res
     
@@ -221,7 +254,8 @@ class Lsra:
         for i in range(ir.local_vars):
             self.var_intervals.append(Interval(
                 of=i, 
-                use_positions=[], 
+                use_positions=[],
+                write_positions=[],
                 live_range=LiveRange(first_write_at=ir.ir_idx_count, last_read_at=-1), 
                 live_in=None
             ))
@@ -234,25 +268,20 @@ class Lsra:
                     loc = tree.ir_idx
                     if loc < inter.live_range.first_write_at:
                         inter.live_range.first_write_at = loc
+                    inter.write_positions.append(WritePos(belongs_to=inter, used_in=tree, on_block_boundary=False))
                 if tree.kind == irepr.TreeKind.LdLocal:
                     inter: Interval = self.var_intervals[tree.operands[0]]
                     # The value is going to be last read in the parent of the LdLocal node
-                    loc = tree.parent.ir_idx
+                    loc = tree.ir_idx
                     if loc > inter.live_range.last_read_at:
                         inter.live_range.last_read_at = loc
-                    inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree))
+                    inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree, on_block_boundary=False))
             
             # TODO : compute live in / out sets to make sure that variables aren't needlessly used on block boundaries
-            for inter in self.var_intervals:
-                loc = block.last_statement.tree.ir_idx
-                if loc > inter.live_range.last_read_at:
-                    inter.live_range.last_read_at = loc
-                inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree))
-        
 
         # Linear scan
         for block in ir.block_execution_order():
-            # TODO block boundaries with active in and active out sets + resolution
+            # TODO : Active in active out sets
             for reg in self.registers:
                 reg.active_interval = None
             for interval in self.active_intervals:
@@ -304,24 +333,25 @@ class Lsra:
 
                     # If the interval already lives in that register, nothing to do
                     if tree.subtrees[0].reg != inter.live_in:
-                        # If we're trying to store a register that *another* variable lives in, we need to spill it.
+                        # If we're trying to store into a register that *another* variable lives in, we spill it.
                         # Otherwise, it's just a tree temp, so we can discard it
+                        # TODO : try to simply move it to another register
                         if self.registers[tree.subtrees[0].reg].active_interval != None and isinstance(self.registers[tree.subtrees[0].reg].active_interval.of, int):
-                            self.spill_interval(self.registers[inter.live_in].active_interval)
+                            self.spill_interval(self.registers[tree.subtrees[0].reg].active_interval)
 
                         if inter.live_in != None:
                             # If the variable previously lived in another register, clear it
+                            print(inter.live_in)
                             self.registers[inter.live_in].active_interval = None
                         else:
                             # If the interval wasn't alive, it is now
                             self.active_intervals.append(inter)
 
                         inter.live_in = tree.subtrees[0].reg
-                        
                         self.registers[inter.live_in].active_interval = inter
 
-                    # Since tree.reg is only meant to represent output registers, we're instead storing the used register
-                    # as an operand.
+                    # Since tree.reg is only meant to represent output registers,
+                    # we're instead storing the used register as an operand.
                     # TODO : clarify this in Ir.dump
                     # It is unclear if this is needed at all
                     tree.operands.append(inter.live_in)
@@ -330,20 +360,26 @@ class Lsra:
                 elif tree.parent != None:
                     tree_interval = Interval(
                         of=tree,
+                        write_positions=[],
                         use_positions=[], 
                         live_range=LiveRange(first_write_at=tree.ir_idx, last_read_at=tree.parent.ir_idx), 
                         live_in=None
                     )
-                    tree_interval.use_positions.append(UsePos(belongs_to=tree_interval, used_in=tree.parent))
+                    tree_interval.write_positions.append(WritePos(belongs_to=tree_interval, used_in=tree, on_block_boundary=False))
+                    tree_interval.use_positions.append(UsePos(belongs_to=tree_interval, used_in=tree.parent, on_block_boundary=False))
                     self.activate_interval(tree_interval)
                     tree.reg = tree_interval.live_in
-            
-            # TODO block boundaries with active in and active out sets + resolution
-            self.free_intervals()
-            # Spill all intervals that are not expected to be active in the next block
+
+            # TODO : Active in active out sets
             for active_interval in self.active_intervals:
-                assert isinstance(active_interval.of, int), "tree temps shouldn't be present at this point"
+                assert isinstance(active_interval.of, int), "active tree temp encountered after block ended"
 
                 block.last_statement.tree.spills.append(RegSpill(active_interval.live_in, active_interval))
+                self.registers[active_interval.live_in].interval = None
+                active_interval.live_in = None
+            self.active_intervals = []
+            
+            # Debug thing
+            assert not any(var_interval.live_in != None for var_interval in self.var_intervals)
 
 
