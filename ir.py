@@ -77,6 +77,8 @@ class BasicBlock:
     first_statemenent: Statement | None
     last_statement: Statement | None
 
+    predecessors: list[BasicBlock] = dataclasses.field(default_factory=list)
+
     def tree_execution_order(self) -> Iterable[Tree]:
         statement = self.first_statemenent
         while statement != None:
@@ -165,6 +167,12 @@ class Ir:
 
     ir_idx_count: int = 0
 
+    def recompute_predecessors(self) -> None:
+        block = self.blocks.first
+        while block != None:
+            print("last", block.last_statement)
+            block = block.next_block
+
     def reindex(self) -> None:
         index = 0
 
@@ -181,17 +189,11 @@ class Ir:
             block = block.next_block
     
     def tree_execution_order(self) -> Iterable[Tree]:
-        def tree_visitor(tree: Tree) -> Iterable[Tree]:
-            for subtree in tree.subtrees:
-                for t in tree_visitor(subtree):
-                    yield t
-            yield tree
-
         block = self.blocks.first
         while block != None:
             statement = block.first_statemenent
             while statement != None:
-                for t in tree_visitor(statement.tree):
+                for t in statement.tree.tree_execution_order():
                     yield t
                 statement = statement.next_statement
             block = block.next_block

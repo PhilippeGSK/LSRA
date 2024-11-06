@@ -85,6 +85,9 @@ class Lsra:
         self.current_tree = None
     
     # Removes expired intervals from the active_intervals list and frees the corresponding registers
+    # TODO : Improve this by taking into account writes into variables : we can free a var interval if we
+    # know there will be a write to that variable before its next use. This could be implemented by adding "write"
+    # use positions
     def free_intervals(self) -> None:
         pos = self.current_tree.ir_idx
         new_active_intervals = []
@@ -143,6 +146,24 @@ class Lsra:
         self.active_intervals.append(inter)
         return True
     
+    # Spills an interval and returns the freed register
+    def spill_interval(self, inter: Interval) -> int:
+        assert inter.live_in != None, "trying to spill an interval that's not active"
+
+        # We could try looking for a better spot to spill the interval in
+        # (eg. if we're in a loop and the interval isn't going to be used inside, we should spill the interval outside the loop)
+        self.current_tree.spills.append(RegSpill(inter.live_in, inter))
+        # Register will be decided at the time of restoration
+        use_pos = inter.first_use_pos(self.current_tree.ir_idx)
+        use_pos.used_in.restores.append(RegRestore(-1, inter))
+
+        res = inter.live_in
+        inter.live_in = None
+        self.active_intervals.remove(inter)
+        self.registers[res] = None
+
+        return res
+    
     # Ensures an interval is active
     def activate_interval(self, inter: Interval) -> None:
         if (inter.live_in != None):
@@ -154,7 +175,6 @@ class Lsra:
             return
         
         # We couldn't find a free register, we need to spill one
-
         # Find the best candiate to spill
         # The heuristic used here is to pick the one which will have to be restored the furthest in the future
         current_pos = self.current_tree.ir_idx
@@ -186,15 +206,9 @@ class Lsra:
                 print("    " + str(active_interval))
             raise Exception("No intervals elligible for spilling at " + str(self.current_tree.ir_idx))
         
-        # We could try looking for a better spot to spill the interval in
-        # (eg. if we're in a loop and the interval isn't going to be used inside, we should spill the interval outside the loop)
-        self.current_tree.spills.append(RegSpill(best_interval.live_in, best_interval))
-        # Register will be decided at the time of restoration
-        best_use_pos.used_in.restores.append(RegRestore(-1, best_interval))
+        reg = self.spill_interval(best_interval)
 
-        inter.live_in = best_interval.live_in
-        best_interval.live_in = None
-        self.active_intervals.remove(best_interval)
+        inter.live_in = reg
         self.registers[inter.live_in].active_interval = inter
         self.active_intervals.append(inter)
 
@@ -213,16 +227,24 @@ class Lsra:
             ))
 
         # Find the last read, first read, and first write as well as the use positions of every local variable
-        for tree in ir.tree_execution_order():
-            if tree.kind == irepr.TreeKind.StLocal:
-                inter: Interval = self.var_intervals[tree.operands[0]]
-                loc = tree.ir_idx
-                if loc < inter.live_range.first_write_at:
-                    inter.live_range.first_write_at = loc
-            if tree.kind == irepr.TreeKind.LdLocal:
-                inter: Interval = self.var_intervals[tree.operands[0]]
-                # The value is going to be last read in the parent of the LdLocal node
-                loc = tree.parent.ir_idx
+        for block in ir.block_execution_order():
+            for tree in block.tree_execution_order():
+                if tree.kind == irepr.TreeKind.StLocal:
+                    inter: Interval = self.var_intervals[tree.operands[0]]
+                    loc = tree.ir_idx
+                    if loc < inter.live_range.first_write_at:
+                        inter.live_range.first_write_at = loc
+                if tree.kind == irepr.TreeKind.LdLocal:
+                    inter: Interval = self.var_intervals[tree.operands[0]]
+                    # The value is going to be last read in the parent of the LdLocal node
+                    loc = tree.parent.ir_idx
+                    if loc > inter.live_range.last_read_at:
+                        inter.live_range.last_read_at = loc
+                    inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree))
+            
+            # TODO : compute live in / out sets to make sure that variables aren't needlessly used on block boundaries
+            for inter in self.var_intervals:
+                loc = block.last_statement.tree.ir_idx
                 if loc > inter.live_range.last_read_at:
                     inter.live_range.last_read_at = loc
                 inter.use_positions.append(UsePos(belongs_to=inter, used_in=tree))
@@ -271,6 +293,39 @@ class Lsra:
                     self.activate_interval(inter)
                     tree.reg = inter.live_in
                 
+                # Special case for StLocal : when we write to a local variable,
+                # we can just say its interval becomes active in the ouput register of the child node
+                # actual writes to memory will be taken care of later when spilling that interval
+                # If the local variable was already active, we can just clear the register it was in.
+                # This is ok to do because there is now control flow within a block, syncing up variables to be in the registers
+                # they're expected to be in is done during block boundary processing
+                elif tree.kind == irepr.TreeKind.StLocal:
+                    inter: Interval = self.var_intervals[tree.operands[0]]
+
+                    # If the interval already lives in that register, nothing to do
+                    if tree.subtrees[0].reg != inter.live_in:
+                        # If we're trying to store a register that *another* variable lives in, we need to spill it.
+                        # Otherwise, it's just a tree temp, so we can discard it
+                        if self.registers[tree.subtrees[0].reg].active_interval != None and isinstance(self.registers[tree.subtrees[0].reg].active_interval.of, int):
+                            self.spill_interval(self.registers[inter.live_in].active_interval)
+
+                        if inter.live_in != None:
+                            # If the variable previously lived in another register, clear it
+                            self.registers[inter.live_in].active_interval = None
+                        else:
+                            # If the interval wasn't alive, it is now
+                            self.active_intervals.append(inter)
+
+                        inter.live_in = tree.subtrees[0].reg
+                        
+                        self.registers[inter.live_in].active_interval = inter
+
+                    # Since tree.reg is only meant to represent output registers, we're instead storing the used register
+                    # as an operand.
+                    # TODO : clarify this in Ir.dump
+                    # It is unclear if this is needed at all
+                    tree.operands.append(inter.live_in)
+                
                 # In all other case : create an interval for the current tree if it produces a value
                 elif tree.parent != None:
                     tree_interval = Interval(
@@ -282,5 +337,13 @@ class Lsra:
                     tree_interval.use_positions.append(UsePos(belongs_to=tree_interval, used_in=tree.parent))
                     self.activate_interval(tree_interval)
                     tree.reg = tree_interval.live_in
+            
+            # TODO block boundaries with active in and active out sets + resolution
+            self.free_intervals()
+            # Spill all intervals that are not expected to be active in the next block
+            for active_interval in self.active_intervals:
+                assert isinstance(active_interval.of, int), "tree temps shouldn't be present at this point"
 
-    
+                block.last_statement.tree.spills.append(RegSpill(active_interval.live_in, active_interval))
+
+
