@@ -48,4 +48,7 @@ except Exception as e:
     ir.dump()
     raise e
 
+print("IR dump =======")
 ir.dump()
+print("\nASM dump ======")
+ir.dump_asm()

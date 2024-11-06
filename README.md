@@ -8,3 +8,10 @@
 Resources :
 - [https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/jit/lsra-detail.md](https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/jit/lsra-detail.md)
 - [https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/jit/ryujit-overview.md#reg-alloc](https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/jit/ryujit-overview.md#reg-alloc)
+
+Areas to improve :
+- The operand reuse code is rather primitive and doesn't distinguish between lhs and rhs operands. It also doesn't take into account the fact that
+some instructions might not be able to reuse operands for output
+- The block execution order is, so far, just the order the blocks are in in the stack-based language. It might be a good idea to, for example,
+sort the blocks by their likeliness to be executed
+- Edges are not weighted
