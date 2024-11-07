@@ -125,11 +125,8 @@ class Lsra:
             
             if not last_use_reached and self.allow_operand_reuse:
                 # If we allow operand reuse, we free operand registers for the output
-                # Disallow "reusing operands" on block boundaries because variables used on boundary
-                # TODO : this needs improvement
-                first_use_pos = active_interval.first_use_pos(pos)
-                if first_use_pos != None and not first_use_pos.on_block_boundary:
-                    last_use_reached = active_interval.live_range.last_read_at == pos
+                # TODO : figure out if this should be allowed on block boundaries
+                last_use_reached = active_interval.live_range.last_read_at == pos
             
             if not last_use_reached:
                 # First use pos could be None for a variable that is expected to live further than its last actual use pos (LdLocal case)
@@ -140,11 +137,7 @@ class Lsra:
                     # Interval will be remade active by a write later in this same block
                     last_use_reached = first_write_pos.used_in.ir_idx < first_use_pos.used_in.ir_idx
 
-                    # If we allow operand reuse, we free operand registers for the output
-                    # Disallow "reusing operands" on block boundaries because variables used on boundary
-                    # TODO : this needs improvement
-                    if not last_use_reached and self.allow_operand_reuse and not first_write_pos.on_block_boundary:
-                        last_use_reached = first_write_pos.used_in.ir_idx == first_use_pos.used_in.ir_idx
+                    # TODO : consider operand reuse (difficult on block boundary uses)
 
             if not last_use_reached:
                 new_active_intervals.append(active_interval)
